@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MultiChart Trader</title>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap');
+        
+        :root {
+            --bg: #0f0f12;
+            --panel: #1a1a20;
+            --border: #2a2a32;
+            --text: #e0e0e0;
+            --green: #00ff9d;
+            --red: #ff3b5c;
+        }
+        
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body {
+            font-family: 'Inter', system-ui, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #111114;
+            padding: 12px 20px;
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            border-bottom: 1px solid var(--border);
+            z-index: 100;
+        }
+        .logo { font-weight: 600; font-size: 1.3rem; }
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+        select, button {
+            background: var(--panel);
+            color: var(--text);
+            border: 1px solid var(--border);
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 0.95rem;
+        }
+        button {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        button:hover { background: #27272f; }
+        
+        .grid-container {
+            flex: 1;
+            padding: 8px;
+            display: grid;
+            gap: 8px;
+            overflow: hidden;
+        }
+        
+        .chart-pane {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            position: relative;
+        }
+        .pane-header {
+            padding: 10px 14px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-bottom: 1px solid var(--border);
+            background: #151518;
+        }
+        .symbol {
+            font-weight: 600;
+            font-size: 1.1rem;
+        }
+        .ticker-bar {
+            font-family: monospace;
+            font-size: 1.05rem;
+            font-weight: 500;
+            padding: 4px 10px;
+            border-radius: 4px;
+            min-width: 110px;
+            text-align: right;
+            transition: all 0.3s;
+        }
+        .price-up { background: rgba(0,255,157,0.15); color: var(--green); }
+        .price-down { background: rgba(255,59,92,0.15); color: var(--red); }
+        
+        .controls-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        select { font-size: 0.9rem; padding: 6px 10px; }
+        
+        .chart-container {
+            flex: 1;
+            position: relative;
+        }
+        
+        .layout-1 { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+        .layout-2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+        .layout-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+        .layout-6 { grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(2, 1fr); }
+        .layout-8 { grid-template-columns: repeat(4, 1fr); grid-template-rows: repeat(2, 1fr); }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="logo">MultiChart Trader</div>
+        <div class="controls">
+            <label>Charts:</label>
+            <select id="chart-count">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="4" selected>4</option>
+                <option value="6">6</option>
+                <option value="8">8</option>
+            </select>
+            
+            <button onclick="refreshAll()">Refresh All</button>
+        </div>
+    </header>
+    
+    <div id="grid" class="grid-container layout-4"></div>
+
+    <script>
+        let charts = [];
+        let chartInstances = [];
+        let lastPrices = {};
+        
+        const symbols = ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS", "SBIN.NS", "BHARTIARTL.NS", "ITC.NS"];
+        const timeframes = ["1m", "5m", "15m", "30m", "1h", "1d"];
+        
+        function getLayoutClass(count) {
+            if (count === 1) return "layout-1";
+            if (count === 2) return "layout-2";
+            if (count === 4) return "layout-4";
+            if (count === 6) return "layout-6";
+            if (count === 8) return "layout-8";
+            return "layout-4";
+        }
+        
+        async function fetchOHLC(symbol, timeframe, limit = 500) {
+            try {
+                const res = await fetch(`/api/ohlc?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}`);
+                if (!res.ok) throw new Error("Failed");
+                return await res.json();
+            } catch (e) {
+                console.error(e);
+                return [];
+            }
+        }
+        
+        function createPane(id) {
+            const pane = document.createElement("div");
+            pane.className = "chart-pane";
+            pane.innerHTML = `
+                <div class="pane-header">
+                    <div>
+                        <select class="symbol-select" onchange="changeSymbol(${id}, this.value)">
+                            ${symbols.map(s => `<option value="${s}">${s.replace('.NS','')}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <select class="tf-select" onchange="changeTF(${id}, this.value)">
+                            ${timeframes.map(tf => `<option value="${tf}">${tf}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="ticker-bar" id="ticker-${id}">—</div>
+                </div>
+                <div class="chart-container" id="chart-${id}"></div>
+            `;
+            return pane;
+        }
+        
+        async function initChart(paneId, symbol = "RELIANCE.NS", tf = "5m") {
+            const container = document.getElementById(`chart-${paneId}`);
+            const chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: container.clientHeight,
+                layout: { backgroundColor: '#1a1a20', textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#2a2a32' }, horzLines: { color: '#2a2a32' } },
+                crosshair: { mode: LightweightCharts.CrosshairMode.Magnet },
+                timeScale: { timeVisible: true, secondsVisible: false }
+            });
+            
+            const candleSeries = chart.addCandlestickSeries({
+                upColor: '#00ff9d',
+                downColor: '#ff3b5c',
+                borderUpColor: '#00ff9d',
+                borderDownColor: '#ff3b5c',
+                wickUpColor: '#00ff9d',
+                wickDownColor: '#ff3b5c'
+            });
+            
+            chartInstances[paneId] = { chart, series: candleSeries, symbol, tf };
+            
+            // Initial data
+            const data = await fetchOHLC(symbol, tf);
+            if (data.length) {
+                candleSeries.setData(data);
+                chart.timeScale().fitContent();
+                lastPrices[paneId] = data[data.length-1].close;
+                updateTicker(paneId, lastPrices[paneId]);
+            }
+            
+            // Periodic update (every 8 seconds)
+            setInterval(() => updateLive(paneId), 8000);
+            
+            // Resize observer
+            new ResizeObserver(() => {
+                chart.resize(container.clientWidth, container.clientHeight);
+            }).observe(container);
+        }
+        
+        async function updateLive(paneId) {
+            const instance = chartInstances[paneId];
+            if (!instance) return;
+            
+            const data = await fetchOHLC(instance.symbol, instance.tf, 5);
+            if (!data.length) return;
+            
+            const latest = data[data.length-1];
+            instance.series.update(latest);
+            
+            const prev = lastPrices[paneId];
+            lastPrices[paneId] = latest.close;
+            
+            updateTicker(paneId, latest.close, prev);
+        }
+        
+        function updateTicker(paneId, price, prev = null) {
+            const ticker = document.getElementById(`ticker-${paneId}`);
+            if (!ticker) return;
+            
+            ticker.textContent = price.toFixed(2);
+            
+            if (prev !== null) {
+                const isUp = price > prev;
+                ticker.classList.remove('price-up', 'price-down');
+                ticker.classList.add(isUp ? 'price-up' : 'price-down');
+                
+                // Flash effect
+                setTimeout(() => {
+                    ticker.classList.remove('price-up', 'price-down');
+                }, 1200);
+            }
+        }
+        
+        function changeSymbol(paneId, newSymbol) {
+            const instance = chartInstances[paneId];
+            if (instance) {
+                instance.symbol = newSymbol;
+                resetChart(paneId);
+            }
+        }
+        
+        function changeTF(paneId, newTF) {
+            const instance = chartInstances[paneId];
+            if (instance) {
+                instance.tf = newTF;
+                resetChart(paneId);
+            }
+        }
+        
+        async function resetChart(paneId) {
+            const instance = chartInstances[paneId];
+            if (!instance) return;
+            
+            const data = await fetchOHLC(instance.symbol, instance.tf);
+            if (data.length) {
+                instance.series.setData(data);
+                instance.chart.timeScale().fitContent();
+                lastPrices[paneId] = data[data.length-1].close;
+                updateTicker(paneId, lastPrices[paneId]);
+            }
+        }
+        
+        function refreshAll() {
+            Object.keys(chartInstances).forEach(id => resetChart(parseInt(id)));
+        }
+        
+        function buildGrid(count) {
+            const grid = document.getElementById('grid');
+            grid.innerHTML = '';
+            grid.className = `grid-container ${getLayoutClass(count)}`;
+            chartInstances = {};
+            
+            for (let i = 0; i < count; i++) {
+                const pane = createPane(i);
+                grid.appendChild(pane);
+                initChart(i);
+            }
+        }
+        
+        // Load saved preference
+        function loadSavedCount() {
+            const saved = localStorage.getItem('chartCount');
+            const select = document.getElementById('chart-count');
+            if (saved) select.value = saved;
+            return parseInt(select.value);
+        }
+        
+        // Initialize
+        document.getElementById('chart-count').addEventListener('change', (e) => {
+            const count = parseInt(e.target.value);
+            localStorage.setItem('chartCount', count);
+            buildGrid(count);
+        });
+        
+        // Start app
+        window.onload = () => {
+            const initialCount = loadSavedCount();
+            buildGrid(initialCount);
+        };
+    </script>
+</body>
+</html>
